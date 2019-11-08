@@ -12,28 +12,34 @@ import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
 
+import com.google.api.services.bigquery.model.TableFieldSchema;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
-import com.google.api.services.bigquery.model.TableFieldSchema;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
-import java.nio.charset.StandardCharsets;
 
 import org.joda.time.DateTime;
-import org.joda.time.format.ISODateTimeFormat;
+import org.joda.time.DateTimeZone;
 import org.joda.time.format.DateTimeFormat;
 import org.joda.time.format.DateTimeFormatter;
-import org.joda.time.DateTimeZone;
+import org.joda.time.format.ISODateTimeFormat;
 
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.babylon.avro.Appointment;
+import com.babylon.avro.Data;
+import org.apache.avro.io.DatumReader;
+import org.apache.avro.io.Decoder;
+import org.apache.avro.io.DecoderFactory;
+import org.apache.avro.specific.SpecificDatumReader;
 
 
-public class BabylonPipe {
+public class BabylonPipeAvro {
+
+    //private static final Logger logger = LoggerFactory.getLogger(BabylonPipeAvro.class);
 
     public static void main(String[] args) {
 
@@ -62,44 +68,36 @@ public class BabylonPipe {
         Pipeline p = Pipeline.create(options);
 
         p
-
                 .apply(PubsubIO.readMessagesWithAttributes().fromTopic(props.getProperty("pubsub_topic")))
 
-                .apply("ConvertDataToTableRows", ParDo.of(new DoFn<PubsubMessage, TableRow>() {
+                .apply("msg->row", ParDo.of(new DoFn<PubsubMessage, TableRow>() {
                     @ProcessElement
                     public void processElement(ProcessContext c) {
+
                         PubsubMessage message = c.element();
-                        String json_str = new String(message.getPayload(), StandardCharsets.UTF_8);
+                        byte[] msg_avro = message.getPayload();
+
                         TableRow row = new TableRow();
-
                         try {
-                            JSONObject json = new JSONObject(json_str);
-                            String type = json.getString("Type");
-                            row.set("type", type);
-
-                            JSONObject data = json.getJSONObject("Data");
-                            String appointment_id = data.getString("AppointmentId");
-                            row.set("appointment_id", appointment_id);
-
-                            String timestamp_utc = data.getString("TimestampUtc");
+                            DatumReader<Appointment> AppointmentsReader = new SpecificDatumReader(Appointment.class);
+                            DecoderFactory factory = DecoderFactory.get();
+                            Decoder decoder = factory.jsonDecoder(Appointment.getClassSchema(), new ByteArrayInputStream(msg_avro));
+                            Appointment app = AppointmentsReader.read(null, decoder);
+                            row.set("type", app.getType());
+                            row.set("appointment_id", app.getData().getAppointmentId());
                             DateTimeFormatter formatter = DateTimeFormat.forPattern("yyyy-MM-dd'T'HH:mm:ssZ");
-                            DateTime ts = formatter.parseDateTime(timestamp_utc);
+                            DateTime ts = formatter.parseDateTime(app.getData().getTimestampUtc().toString());
                             row.set("timestamp_utc", ISODateTimeFormat.dateTime().print(ts.toDateTime(DateTimeZone.UTC)));
 
-                            JSONArray z = data.getJSONArray("Discipline");
-                            String discipline = z.getString(0);
-                            row.set("discipline", discipline);
-                        } catch(org.json.JSONException e){
-                        } catch(java.lang.Exception e){}
-                        
+                        } catch (IOException e) {}
+
                         c.output(row);
                     }
                 }))
 
-                .apply("InsertTableRowsToBigQuery",
-                        BigQueryIO.writeTableRows().to(props.getProperty("bigquery_datset"))
-                                .withSchema(schema)
-                                .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND));
+                .apply("row->bigquery", BigQueryIO.writeTableRows().to(props.getProperty("bigquery_datset"))
+                    .withSchema(schema)
+                    .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND));
 
         // Run the pipeline
         p.run().waitUntilFinish();
