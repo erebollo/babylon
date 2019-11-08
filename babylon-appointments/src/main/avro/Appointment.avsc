@@ -1,1 +1,35 @@
-
+{
+  "name": "Appointment",
+  "type": "record",
+  "namespace": "com.babylon.avro",
+  "fields": [
+    {
+      "name": "Type",
+      "type": "string"
+    },
+    {
+      "name": "Data",
+      "type": {
+        "name": "Data",
+        "type": "record",
+        "fields": [
+          {
+            "name": "AppointmentId",
+            "type": "string"
+          },
+          {
+            "name": "TimestampUtc",
+            "type": "int"
+          },
+          {
+            "name": "Discipline",
+            "type": {
+              "type": "array",
+              "items": "string"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
